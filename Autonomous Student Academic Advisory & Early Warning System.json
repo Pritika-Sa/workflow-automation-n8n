@@ -1,0 +1,550 @@
+{
+  "name": "Autonomous Student Academic Advisory & Early Warning System",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "weeks",
+              "triggerAtDay": [
+                1
+              ],
+              "triggerAtHour": 8
+            }
+          ]
+        }
+      },
+      "id": "0ff7db0a-af69-437b-816d-c53b4304338b",
+      "name": "Weekly Academic Check",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        0,
+        288
+      ]
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1FuxK0FsEXtmBIYeYe6bz2KOexN3ZZqYBrIYYmZLC50I",
+          "mode": "list",
+          "cachedResultName": "Academic data",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1FuxK0FsEXtmBIYeYe6bz2KOexN3ZZqYBrIYYmZLC50I/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Sheet1",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1FuxK0FsEXtmBIYeYe6bz2KOexN3ZZqYBrIYYmZLC50I/edit#gid=0"
+        },
+        "options": {}
+      },
+      "id": "28b014ce-6abb-4329-a976-77b51eee675d",
+      "name": "Get Student Records",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        224,
+        288
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "OYrN9I8MLZIqG9ps",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const num = (v) => {\n  if (v === undefined || v === null || v === \"\") return null;\n  const n = parseFloat(String(v).replace(/[^0-9.\\-]/g, \"\"));\n  return isNaN(n) ? null : n;\n};\nconst emailRe = /.+@.+\\..+/;\nconst valid = [];\nfor (const it of $input.all()) {\n  const j = it.json;\n  const id = j.Student_ID;\n  const name = j.Name;\n  const email = (j.Email || \"\").toString().trim();\n  const attendance = num(j.Attendance);\n  const gpa = num(j.GPA);\n  if (!id || !name || attendance === null || gpa === null) continue;\n  valid.push({ json: {\n    Student_ID: id,\n    Name: name,\n    Email: email,\n    has_email: emailRe.test(email),\n    Attendance: attendance,\n    GPA: gpa,\n    Math_Midterm: num(j.Math_Midterm),\n    DS_Midterm: num(j.DS_Midterm),\n    AI_Midterm: num(j.AI_Midterm),\n    Credits_Completed: num(j.Credits_Completed),\n    Course_Difficulty: j.Course_Difficulty || \"\",\n  } });\n}\nreturn valid;"
+      },
+      "id": "7da3426e-8ed3-48e0-8606-e3b6fd0f33bb",
+      "name": "Validate Student Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        448,
+        288
+      ]
+    },
+    {
+      "parameters": {
+        "maxItems": 10
+      },
+      "id": "ea2500d0-f294-4c11-80ff-5162afc3f6bb",
+      "name": "Limit",
+      "type": "n8n-nodes-base.limit",
+      "typeVersion": 1,
+      "position": [
+        672,
+        288
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Deterministic academic-risk scoring (no AI / no external calls).\nconst j = $json;\nconst num = (v) => {\n  const n = parseFloat(v);\n  return isNaN(n) ? 0 : n;\n};\n\nconst attendance = num(j.Attendance);\nconst gpa = num(j.GPA);\nconst math = num(j.Math_Midterm);\nconst ds = num(j.DS_Midterm);\nconst ai = num(j.AI_Midterm);\nconst credits = num(j.Credits_Completed);\nconst difficulty = (j.Course_Difficulty || \"\").toString();\n\nconst avgMidterm = Math.round(((math + ds + ai) / 3) * 100) / 100;\n\nlet score = 0;\nconst factors = [];\n\n// Attendance\nif (attendance < 60) { score += 30; factors.push(\"Very low attendance (\" + attendance + \"%) — below 60%\"); }\nelse if (attendance < 75) { score += 15; factors.push(\"Low attendance (\" + attendance + \"%) — between 60% and 74%\"); }\n\n// GPA\nif (gpa < 5.0) { score += 30; factors.push(\"Low GPA (\" + gpa + \") — below 5.0\"); }\nelse if (gpa < 6.5) { score += 15; factors.push(\"Moderate GPA (\" + gpa + \") — between 5.0 and 6.49\"); }\n\n// Average midterm\nif (avgMidterm < 40) { score += 25; factors.push(\"Very low average midterm score (\" + avgMidterm + \") — below 40\"); }\nelse if (avgMidterm < 55) { score += 10; factors.push(\"Below-average midterm score (\" + avgMidterm + \") — between 40 and 54\"); }\n\n// Credits completed\nif (credits < 15) { score += 15; factors.push(\"Few credits completed (\" + credits + \") — below 15\"); }\n\n// Course difficulty\nif (difficulty.toLowerCase() === \"high\") { score += 5; factors.push(\"Enrolled in high-difficulty courses\"); }\n\nlet level = \"Low\";\nif (score >= 50) level = \"High\";\nelse if (score >= 25) level = \"Medium\";\n\n// Weak subjects (midterm below 55)\nconst weak = [];\nif (math < 55) weak.push(\"Math\");\nif (ds < 55) weak.push(\"Data Science\");\nif (ai < 55) weak.push(\"AI\");\n\nif (factors.length === 0) factors.push(\"No significant academic risk factors identified\");\n\nreturn { json: {\n  ...j,\n  Average_Midterm: avgMidterm,\n  Risk_Score: score,\n  Risk_Level: level,\n  Risk_Factors: factors,\n  Weak_Subjects: weak,\n} };"
+      },
+      "id": "99740d75-bb6e-4b0d-8273-b7dd8cfb0f7c",
+      "name": "Academic Risk Assessment",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        896,
+        288
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "is-low",
+              "leftValue": "={{ ($json.Risk_Level || \"\").toString().toUpperCase() }}",
+              "rightValue": "LOW",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "bb26fa85-aa34-4225-ad8b-ab23949bca44",
+      "name": "Risk Classification",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1248,
+        288
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const j = $json;\nconst join = (v) => Array.isArray(v) ? v.join(\", \") : (v || \"\");\nreturn { json: {\n  Student_ID: j.Student_ID,\n  Name: j.Name,\n  Email: j.Email,\n  Risk_Score: j.Risk_Score,\n  Risk_Level: j.Risk_Level,\n  Main_Concerns: join(j.Risk_Factors),\n  Weak_Subjects: join(j.Weak_Subjects),\n  Recommendations: \"\",\n  Intervention: \"No intervention required (low risk).\",\n  Assessed_At: new Date().toISOString(),\n} };"
+      },
+      "id": "b9be8dcf-8935-4303-a089-5c6edacccb6a",
+      "name": "Build Low-Risk Record",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1824,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "1FuxK0FsEXtmBIYeYe6bz2KOexN3ZZqYBrIYYmZLC50I",
+          "mode": "list",
+          "cachedResultName": "Academic data",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1FuxK0FsEXtmBIYeYe6bz2KOexN3ZZqYBrIYYmZLC50I/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Sheet1",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1FuxK0FsEXtmBIYeYe6bz2KOexN3ZZqYBrIYYmZLC50I/edit#gid=0"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "Student_ID"
+          ],
+          "schema": [
+            {
+              "id": "Student_ID",
+              "displayName": "Student_ID",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Name",
+              "displayName": "Name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Email",
+              "displayName": "Email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Attendance",
+              "displayName": "Attendance",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "GPA",
+              "displayName": "GPA",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Math_Midterm",
+              "displayName": "Math_Midterm",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "DS_Midterm",
+              "displayName": "DS_Midterm",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "AI_Midterm",
+              "displayName": "AI_Midterm",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Credits_Completed",
+              "displayName": "Credits_Completed",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Course_Difficulty",
+              "displayName": "Course_Difficulty",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "f88d328e-cea7-419a-9156-dc64ea8d1a36",
+      "name": "Save Assessment",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        2048,
+        96
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "OYrN9I8MLZIqG9ps",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Deterministic, personalized mentoring plan (no AI / no external calls).\nconst j = $json;\nconst name = j.Name;\nconst level = j.Risk_Level;\nconst weak = Array.isArray(j.Weak_Subjects) ? j.Weak_Subjects : [];\nconst attendance = Number(j.Attendance);\nconst gpa = Number(j.GPA);\nconst avg = Number(j.Average_Midterm);\nconst credits = Number(j.Credits_Completed);\n\nconst recs = [];\nif (attendance < 75) recs.push(\"Improve attendance — aim to attend every class; current attendance is \" + attendance + \"%.\");\nif (gpa < 6.5) recs.push(\"Meet your academic advisor to build a plan to raise your GPA (currently \" + gpa + \").\");\nweak.forEach((s) => recs.push(\"Attend tutoring and office hours for \" + s + \" to strengthen your understanding.\"));\nif (avg < 55) recs.push(\"Adopt a structured weekly revision schedule and practice past papers to lift midterm performance (average is \" + avg + \").\");\nif (credits < 15) recs.push(\"Discuss your credit load and progression plan with your advisor (only \" + credits + \" credits completed).\");\nif (recs.length === 0) recs.push(\"Keep up your current study habits and stay consistent.\");\n\nconst intervention = level === \"High\"\n  ? \"Enroll the student in the intensive academic support programme with weekly advisor check-ins and mandatory tutoring for the identified weak subjects.\"\n  : (level === \"Medium\"\n    ? \"Schedule bi-weekly advisor check-ins and recommend tutoring for the identified weak subjects.\"\n    : \"No formal intervention required; provide standard encouragement and resources.\");\n\nconst studyPlan = weak.length\n  ? \"Week 1-2: focus on fundamentals in \" + weak.join(\", \") + \". Week 3-4: practice problem sets and review midterm mistakes. Ongoing: weekly revision and attend all classes.\"\n  : \"Maintain a steady weekly revision routine and continue attending all classes.\";\n\nconst encouragement = \"You have completed \" + credits + \" credits, \" + name + \" — with focused, consistent effort on the areas above you can get back on track. Small steps each week make a big difference.\";\n\nreturn { json: {\n  ...j,\n  Recommendations: recs,\n  Intervention: intervention,\n  Study_Plan: studyPlan,\n  Encouragement: encouragement,\n} };"
+      },
+      "id": "4318f926-11e6-4b80-97b6-2541c1abb50d",
+      "name": "Mentor Recommendation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1472,
+        416
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const j = $json;\nconst join = (v) => Array.isArray(v) ? v.join(\", \") : (v || \"\");\nreturn { json: {\n  Student_ID: j.Student_ID,\n  Name: j.Name,\n  Email: j.Email,\n  Risk_Score: j.Risk_Score,\n  Risk_Level: j.Risk_Level,\n  Main_Concerns: join(j.Risk_Factors),\n  Weak_Subjects: join(j.Weak_Subjects),\n  Recommendations: join(j.Recommendations),\n  Intervention: j.Intervention || \"\",\n  Assessed_At: new Date().toISOString(),\n} };"
+      },
+      "id": "219d8531-101d-490f-bbd6-b76afaa173c7",
+      "name": "Build Full Record",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1824,
+        224
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "has-email",
+              "leftValue": "={{ $('Validate Student Data').item.json.has_email }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "4257930b-bfdb-4d0f-82c6-e1ae4ae6d06f",
+      "name": "Notification Gate",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1824,
+        512
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "=user@gmail.com",
+        "subject": "=Academic support check-in for {{ $('Validate Student Data').item.json.Name }}",
+        "message": "=<p>Dear {{ $('Validate Student Data').item.json.Name }},</p>\n<p>We hope your semester is going well. As part of our ongoing academic support programme, we noticed some areas where additional academic support may be helpful, and we wanted to reach out proactively so you have every resource you need to succeed.</p>\n<p><strong>A few suggestions that may help:</strong></p>\n<p>• {{ ($('Mentor Recommendation').item.json.Recommendations || []).join('<br>• ') }}</p>\n<p><strong>A short plan to consider:</strong><br>{{ $('Mentor Recommendation').item.json.Study_Plan }}</p>\n<p>{{ $('Mentor Recommendation').item.json.Encouragement }}</p>\n<p>Your academic advisor is available to support you — please feel free to reach out to schedule a chat. We are here to help.</p>\n<p>Warm regards,<br>Student Academic Advisory Team</p>",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "id": "45f720b5-b07d-42c2-b46d-ed00d7ca6a35",
+      "name": "Send Student Email",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        2048,
+        416
+      ],
+      "webhookId": "d8919a7d-5e67-4019-ab91-31663900de09",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "KlPX9Jr9xCqFCGTt",
+          "name": "Gmail account"
+        }
+      },
+      "disabled": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "sendTo": "user@gmail.com",
+        "subject": "=[Early Warning] {{ $('Academic Risk Assessment').item.json.Risk_Level }} risk - {{ $('Validate Student Data').item.json.Name }} ({{ $('Validate Student Data').item.json.Student_ID }})",
+        "message": "=<h3>Student Early-Warning Alert</h3>\n<p><strong>Student:</strong> {{ $('Validate Student Data').item.json.Name }} ({{ $('Validate Student Data').item.json.Student_ID }})</p>\n<p><strong>Email:</strong> {{ $('Validate Student Data').item.json.Email }}</p>\n<p><strong>Risk Score:</strong> {{ $('Academic Risk Assessment').item.json.Risk_Score }} / 100</p>\n<p><strong>Risk Level:</strong> {{ $('Academic Risk Assessment').item.json.Risk_Level }}</p>\n<p><strong>Attendance:</strong> {{ $('Validate Student Data').item.json.Attendance }}% &nbsp; | &nbsp; <strong>GPA:</strong> {{ $('Validate Student Data').item.json.GPA }}</p>\n<p><strong>Midterms</strong> — Math: {{ $('Validate Student Data').item.json.Math_Midterm }}, Data Science: {{ $('Validate Student Data').item.json.DS_Midterm }}, AI: {{ $('Validate Student Data').item.json.AI_Midterm }} (avg {{ $('Academic Risk Assessment').item.json.Average_Midterm }})</p>\n<p><strong>Risk Factors:</strong><br>• {{ ($('Academic Risk Assessment').item.json.Risk_Factors || []).join('<br>• ') }}</p>\n<p><strong>Weak Subjects:</strong> {{ ($('Academic Risk Assessment').item.json.Weak_Subjects || []).join(', ') }}</p>\n<p><strong>Recommended Intervention:</strong><br>{{ $('Mentor Recommendation').item.json.Intervention }}</p>\n<p><strong>Suggested Study Plan:</strong><br>{{ $('Mentor Recommendation').item.json.Study_Plan }}</p>",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "id": "3cce7ae8-f849-48e5-8d8f-7267abd3db41",
+      "name": "Send Advisor Alert",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        2048,
+        608
+      ],
+      "webhookId": "34c54658-b6fc-4946-a1fb-5f2174c7ad0b",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "KlPX9Jr9xCqFCGTt",
+          "name": "Gmail account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Weekly Academic Check": {
+      "main": [
+        [
+          {
+            "node": "Get Student Records",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Student Records": {
+      "main": [
+        [
+          {
+            "node": "Validate Student Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Student Data": {
+      "main": [
+        [
+          {
+            "node": "Limit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Limit": {
+      "main": [
+        [
+          {
+            "node": "Academic Risk Assessment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Academic Risk Assessment": {
+      "main": [
+        [
+          {
+            "node": "Risk Classification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Risk Classification": {
+      "main": [
+        [
+          {
+            "node": "Build Low-Risk Record",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mentor Recommendation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Low-Risk Record": {
+      "main": [
+        [
+          {
+            "node": "Save Assessment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mentor Recommendation": {
+      "main": [
+        [
+          {
+            "node": "Build Full Record",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Notification Gate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Full Record": {
+      "main": [
+        [
+          {
+            "node": "Save Assessment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notification Gate": {
+      "main": [
+        [
+          {
+            "node": "Send Student Email",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Send Advisor Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "b2925a5a-8882-4d1d-96c5-b45c29eadc78",
+  "meta": {
+    "instanceId": "547e020200030967c4f6acfc1e72ed68aefada18cf2e417bc989fe6e54ffc393"
+  },
+  "nodeGroups": [],
+  "id": "ImIsgipMAmjwR84k",
+  "tags": []
+}
